@@ -41,14 +41,6 @@ impl PyRange {
     }
 
     #[inline]
-    pub fn contains(&self, value: &BigInt) -> bool {
-        match self.offset(value) {
-            Some(ref offset) => offset.is_multiple_of(&self.step),
-            None => false,
-        }
-    }
-
-    #[inline]
     pub fn index_of(&self, value: &BigInt) -> Option<BigInt> {
         match self.offset(value) {
             Some(ref offset) if offset.is_multiple_of(&self.step) => {
@@ -112,7 +104,7 @@ pub fn init(context: &PyContext) {
 
     extend_class!(context, range_type, {
         "__bool__" => context.new_rustfunc(PyRangeRef::bool),
-        "__contains__" => context.new_rustfunc(range_contains),
+        "__contains__" => context.new_rustfunc(PyRangeRef::contains),
         "__doc__" => context.new_str(range_doc.to_string()),
         "__getitem__" => context.new_rustfunc(PyRangeRef::getitem),
         "__iter__" => context.new_rustfunc(PyRangeRef::iter),
@@ -120,8 +112,8 @@ pub fn init(context: &PyContext) {
         "__new__" => context.new_rustfunc(range_new),
         "__repr__" => context.new_rustfunc(PyRangeRef::repr),
         "__reversed__" => context.new_rustfunc(PyRangeRef::reversed),
-        "count" => context.new_rustfunc(range_count),
-        "index" => context.new_rustfunc(range_index),
+        "count" => context.new_rustfunc(PyRangeRef::count),
+        "index" => context.new_rustfunc(PyRangeRef::index),
         "start" => context.new_property(PyRangeRef::start),
         "stop" => context.new_property(PyRangeRef::stop),
         "step" => context.new_property(PyRangeRef::step),
@@ -231,6 +223,54 @@ impl PyRangeRef {
         self.stop != self.start
     }
 
+    fn contains(self, needle: PyObjectRef, vm: &VirtualMachine) -> bool {
+        if let Ok(int) = needle.downcast::<PyInt>() {
+            match self.offset(&int.value) {
+                Some(ref offset) => offset.is_multiple_of(&self.step),
+                None => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    fn index(self, needle: PyObjectRef, vm: &VirtualMachine) -> PyResult<PyInt> {
+        arg_check!(
+            vm,
+            args,
+            required = [(zelf, Some(vm.ctx.range_type())), (needle, None)]
+        );
+
+        let range = get_value(zelf);
+
+        if objtype::isinstance(needle, &vm.ctx.int_type()) {
+            let needle = objint::get_value(needle);
+
+            match range.index_of(&needle) {
+                Some(idx) => Ok(vm.ctx.new_int(idx)),
+                None => Err(vm.new_value_error(format!("{} is not in range", needle))),
+            }
+        } else {
+            Err(vm.new_value_error("sequence.index(x): x not in sequence".to_string()))
+        }
+    }
+
+    fn range_count(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
+        arg_check!(
+            vm,
+            args,
+            required = [(zelf, Some(vm.ctx.range_type())), (item, None)]
+        );
+
+        let range = get_value(zelf);
+
+        if objtype::isinstance(item, &vm.ctx.int_type()) {
+            Ok(vm.ctx.new_int(range.count(&objint::get_value(item))))
+        } else {
+            Ok(vm.ctx.new_int(0))
+        }
+    }
+
     fn getitem(self, subscript: Either<PyIntRef, PySliceRef>, vm: &VirtualMachine) -> PyResult {
         match subscript {
             Either::A(index) => {
@@ -289,59 +329,4 @@ fn range_new(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
     }?;
 
     Ok(range.into_object())
-}
-
-fn range_contains(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
-    arg_check!(
-        vm,
-        args,
-        required = [(zelf, Some(vm.ctx.range_type())), (needle, None)]
-    );
-
-    let range = get_value(zelf);
-
-    let result = if objtype::isinstance(needle, &vm.ctx.int_type()) {
-        range.contains(&objint::get_value(needle))
-    } else {
-        false
-    };
-
-    Ok(vm.ctx.new_bool(result))
-}
-
-fn range_index(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
-    arg_check!(
-        vm,
-        args,
-        required = [(zelf, Some(vm.ctx.range_type())), (needle, None)]
-    );
-
-    let range = get_value(zelf);
-
-    if objtype::isinstance(needle, &vm.ctx.int_type()) {
-        let needle = objint::get_value(needle);
-
-        match range.index_of(&needle) {
-            Some(idx) => Ok(vm.ctx.new_int(idx)),
-            None => Err(vm.new_value_error(format!("{} is not in range", needle))),
-        }
-    } else {
-        Err(vm.new_value_error("sequence.index(x): x not in sequence".to_string()))
-    }
-}
-
-fn range_count(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
-    arg_check!(
-        vm,
-        args,
-        required = [(zelf, Some(vm.ctx.range_type())), (item, None)]
-    );
-
-    let range = get_value(zelf);
-
-    if objtype::isinstance(item, &vm.ctx.int_type()) {
-        Ok(vm.ctx.new_int(range.count(&objint::get_value(item))))
-    } else {
-        Ok(vm.ctx.new_int(0))
-    }
 }
