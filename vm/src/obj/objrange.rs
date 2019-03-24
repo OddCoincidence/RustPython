@@ -3,7 +3,7 @@ use std::ops::Mul;
 
 use num_bigint::{BigInt, Sign};
 use num_integer::Integer;
-use num_traits::{One, Signed, ToPrimitive, Zero};
+use num_traits::{One, Signed, Zero};
 
 use crate::function::{OptionalArg, PyFuncArgs};
 use crate::pyobject::{
@@ -31,26 +31,6 @@ impl PyValue for PyRange {
 }
 
 impl PyRange {
-    #[inline]
-    pub fn try_len(&self) -> Option<usize> {
-        match self.step.sign() {
-            Sign::Plus if self.start < self.stop => ((&self.stop - &self.start - 1usize)
-                / &self.step)
-                .to_usize()
-                .map(|sz| sz + 1),
-            Sign::Minus if self.start > self.stop => ((&self.start - &self.stop - 1usize)
-                / (-&self.step))
-                .to_usize()
-                .map(|sz| sz + 1),
-            _ => Some(0),
-        }
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.try_len().unwrap()
-    }
-
     #[inline]
     fn offset(&self, value: &BigInt) -> Option<BigInt> {
         match self.step.sign() {
@@ -113,40 +93,6 @@ impl PyRange {
             None
         }
     }
-
-    #[inline]
-    pub fn reversed(&self) -> Self {
-        // compute the last element that is actually contained within the range
-        // this is the new start
-        let remainder = ((&self.stop - &self.start) % &self.step).abs();
-        let start = if remainder.is_zero() {
-            &self.stop - &self.step
-        } else {
-            &self.stop - &remainder
-        };
-
-        match self.step.sign() {
-            Sign::Plus => PyRange {
-                start,
-                stop: &self.start - 1,
-                step: -&self.step,
-            },
-            Sign::Minus => PyRange {
-                start,
-                stop: &self.start + 1,
-                step: -&self.step,
-            },
-            Sign::NoSign => unreachable!(),
-        }
-    }
-
-    pub fn repr(&self) -> String {
-        if self.step == BigInt::one() {
-            format!("range({}, {})", self.start, self.stop)
-        } else {
-            format!("range({}, {}, {})", self.start, self.stop, self.step)
-        }
-    }
 }
 
 pub fn get_value(obj: &PyObjectRef) -> PyRange {
@@ -165,20 +111,20 @@ pub fn init(context: &PyContext) {
                      When step is given, it specifies the increment (or decrement).";
 
     extend_class!(context, range_type, {
-        "__bool__" => context.new_rustfunc(range_bool),
+        "__bool__" => context.new_rustfunc(PyRangeRef::bool),
         "__contains__" => context.new_rustfunc(range_contains),
         "__doc__" => context.new_str(range_doc.to_string()),
         "__getitem__" => context.new_rustfunc(PyRangeRef::getitem),
-        "__iter__" => context.new_rustfunc(range_iter),
-        "__len__" => context.new_rustfunc(range_len),
+        "__iter__" => context.new_rustfunc(PyRangeRef::iter),
+        "__len__" => context.new_rustfunc(PyRangeRef::len),
         "__new__" => context.new_rustfunc(range_new),
-        "__repr__" => context.new_rustfunc(range_repr),
-        "__reversed__" => context.new_rustfunc(range_reversed),
+        "__repr__" => context.new_rustfunc(PyRangeRef::repr),
+        "__reversed__" => context.new_rustfunc(PyRangeRef::reversed),
         "count" => context.new_rustfunc(range_count),
         "index" => context.new_rustfunc(range_index),
-        "start" => context.new_property(range_start),
-        "step" => context.new_property(range_step),
-        "stop" => context.new_property(range_stop)
+        "start" => context.new_property(PyRangeRef::start),
+        "stop" => context.new_property(PyRangeRef::stop),
+        "step" => context.new_property(PyRangeRef::step),
     });
 }
 
@@ -210,6 +156,79 @@ impl PyRangeRef {
                 .unwrap_or_else(One::one),
         }
         .into_ref_with_type(vm, cls)
+    }
+
+    fn start(self, _vm: &VirtualMachine) -> BigInt {
+        self.start.clone()
+    }
+
+    fn stop(self, _vm: &VirtualMachine) -> BigInt {
+        self.stop.clone()
+    }
+
+    fn step(self, _vm: &VirtualMachine) -> BigInt {
+        self.step.clone()
+    }
+
+    fn iter(self: PyRangeRef, _vm: &VirtualMachine) -> PyIteratorValue {
+        PyIteratorValue {
+            position: Cell::new(0),
+            iterated_obj: self.into_object(),
+        }
+    }
+
+    fn reversed(self: PyRangeRef, vm: &VirtualMachine) -> PyIteratorValue {
+        // compute the last element that is actually contained within the range
+        // this is the new start
+        let remainder = ((&self.stop - &self.start) % &self.step).abs();
+        let start = if remainder.is_zero() {
+            &self.stop - &self.step
+        } else {
+            &self.stop - &remainder
+        };
+
+        let reversed = match self.step.sign() {
+            Sign::Plus => PyRange {
+                start,
+                stop: &self.start - 1,
+                step: -&self.step,
+            },
+            Sign::Minus => PyRange {
+                start,
+                stop: &self.start + 1,
+                step: -&self.step,
+            },
+            Sign::NoSign => unreachable!(),
+        };
+        PyIteratorValue {
+            position: Cell::new(0),
+            iterated_obj: reversed.into_ref(vm).into_object(),
+        }
+    }
+
+    fn len(self, _vm: &VirtualMachine) -> PyInt {
+        match self.step.sign() {
+            Sign::Plus if self.start < self.stop => {
+                PyInt::new((&self.stop - &self.start - 1usize) / &self.step + 1)
+            }
+            Sign::Minus if self.start > self.stop => {
+                PyInt::new((&self.start - &self.stop - 1usize) / (-&self.step) + 1)
+            }
+            Sign::Plus | Sign::Minus => PyInt::new(0),
+            Sign::NoSign => unreachable!(),
+        }
+    }
+
+    fn repr(self, _vm: &VirtualMachine) -> String {
+        if self.step.is_one() {
+            format!("range({}, {})", self.start, self.stop)
+        } else {
+            format!("range({}, {}, {})", self.start, self.stop, self.step)
+        }
+    }
+
+    fn bool(self, _vm: &VirtualMachine) -> bool {
+        self.stop != self.start
     }
 
     fn getitem(self, subscript: Either<PyIntRef, PySliceRef>, vm: &VirtualMachine) -> PyResult {
@@ -272,48 +291,6 @@ fn range_new(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
     Ok(range.into_object())
 }
 
-fn range_iter(range: PyRangeRef, _vm: &VirtualMachine) -> PyIteratorValue {
-    PyIteratorValue {
-        position: Cell::new(0),
-        iterated_obj: range.into_object(),
-    }
-}
-
-fn range_reversed(zelf: PyRangeRef, vm: &VirtualMachine) -> PyIteratorValue {
-    let range = zelf.reversed();
-
-    PyIteratorValue {
-        position: Cell::new(0),
-        iterated_obj: range.into_ref(vm).into_object(),
-    }
-}
-
-fn range_len(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
-    arg_check!(vm, args, required = [(zelf, Some(vm.ctx.range_type()))]);
-
-    if let Some(len) = get_value(zelf).try_len() {
-        Ok(vm.ctx.new_int(len))
-    } else {
-        Err(vm.new_overflow_error("Python int too large to convert to Rust usize".to_string()))
-    }
-}
-
-fn range_repr(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
-    arg_check!(vm, args, required = [(zelf, Some(vm.ctx.range_type()))]);
-
-    let repr = get_value(zelf).repr();
-
-    Ok(vm.ctx.new_str(repr))
-}
-
-fn range_bool(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
-    arg_check!(vm, args, required = [(zelf, Some(vm.ctx.range_type()))]);
-
-    let len = get_value(zelf).len();
-
-    Ok(vm.ctx.new_bool(len > 0))
-}
-
 fn range_contains(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
     arg_check!(
         vm,
@@ -367,19 +344,4 @@ fn range_count(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
     } else {
         Ok(vm.ctx.new_int(0))
     }
-}
-
-fn range_start(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
-    arg_check!(vm, args, required = [(zelf, Some(vm.ctx.range_type()))]);
-    Ok(vm.ctx.new_int(get_value(zelf).start))
-}
-
-fn range_stop(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
-    arg_check!(vm, args, required = [(zelf, Some(vm.ctx.range_type()))]);
-    Ok(vm.ctx.new_int(get_value(zelf).stop))
-}
-
-fn range_step(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
-    arg_check!(vm, args, required = [(zelf, Some(vm.ctx.range_type()))]);
-    Ok(vm.ctx.new_int(get_value(zelf).step))
 }
